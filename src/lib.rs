@@ -153,7 +153,8 @@ pub enum Tag<'a> {
     BlockQuote,
     /// A code block.
     CodeBlock(CodeBlockKind<'a>),
-
+    /// A math block.
+    MathBlock,
     /// A HTML block.
     HtmlBlock,
 
@@ -213,7 +214,7 @@ pub enum TagEnd {
 
     BlockQuote,
     CodeBlock,
-
+    MathBlock,
     HtmlBlock,
 
     /// A list, `true` for ordered lists.
@@ -335,6 +336,9 @@ pub enum Event<'a> {
     /// An inline code node.
     #[cfg_attr(feature = "serde", serde(borrow))]
     Code(CowStr<'a>),
+    /// An inline math node
+    #[cfg_attr(feature = "serde", serde(borrow))]
+    InlineMath(CowStr<'a>),
     /// An HTML node.
     #[cfg_attr(feature = "serde", serde(borrow))]
     Html(CowStr<'a>),

@@ -107,6 +107,11 @@ where
                     escape_html(&mut self.writer, &text)?;
                     self.write("</code>")?;
                 }
+                InlineMath(text) => {
+                    self.write("<span>$")?;
+                    escape_html(&mut self.writer, &text)?;
+                    self.write("$</span>")?;
+                }
                 Html(html) | InlineHtml(html) => {
                     self.write(&html)?;
                 }
@@ -153,6 +158,13 @@ where
                 } else {
                     self.write("\n<p>")
                 }
+            }
+            Tag::MathBlock => {
+                if self.end_newline {
+                    self.write("<p>$$\n")
+                } else {
+                    self.write("\n<p>$$\n")
+                } 
             }
             Tag::Heading {
                 level,
@@ -352,6 +364,9 @@ where
             TagEnd::Paragraph => {
                 self.write("</p>\n")?;
             }
+            TagEnd::MathBlock => {
+                self.write("$$</p>\n")?;
+            }
             TagEnd::Heading(level) => {
                 self.write("</")?;
                 write!(&mut self.writer, "{}", level)?;
@@ -429,7 +444,7 @@ where
                     nest -= 1;
                 }
                 Html(_) => {}
-                InlineHtml(text) | Code(text) | Text(text) => {
+                InlineHtml(text) | Code(text) | Text(text) | InlineMath(text) => {
                     escape_html(&mut self.writer, &text)?;
                     self.end_newline = text.ends_with('\n');
                 }

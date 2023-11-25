@@ -64,6 +64,7 @@ pub(crate) enum ItemBody {
     // quote byte, can_open, can_close
     MaybeSmartQuote(u8, bool, bool),
     MaybeCode(usize, bool), // number of backticks, preceded by backslash
+    MaybeInlineMath,
     MaybeHtml,
     MaybeLinkOpen,
     // bool indicates whether or not the preceding section could be a reference
@@ -75,6 +76,7 @@ pub(crate) enum ItemBody {
     Strong,
     Strikethrough,
     Code(CowIndex),
+    InlineMath(CowIndex),
     Link(LinkIndex),
     Image(LinkIndex),
     FootnoteReference(CowIndex),
@@ -84,6 +86,7 @@ pub(crate) enum ItemBody {
     Heading(HeadingLevel, Option<HeadingIndex>), // heading level
     FencedCodeBlock(CowIndex),
     IndentCodeBlock,
+    MathBlock,
     HtmlBlock,
     InlineHtml,
     Html,
@@ -114,6 +117,7 @@ impl ItemBody {
                 | ItemBody::MaybeSmartQuote(..)
                 | ItemBody::MaybeHtml
                 | ItemBody::MaybeCode(..)
+                | ItemBody::MaybeInlineMath
                 | ItemBody::MaybeLinkOpen
                 | ItemBody::MaybeLinkClose(..)
                 | ItemBody::MaybeImage
@@ -337,6 +341,19 @@ impl<'input, F: BrokenLinkCallback<'input>> Parser<'input, F> {
                         if scan == None {
                             self.tree[cur_ix].item.body = ItemBody::Text;
                         }
+                    }
+                }
+                ItemBody::MaybeInlineMath => {
+                    let mut scan = self.tree[cur_ix].next;
+                    while let Some(scan_ix) = scan {
+                        if let ItemBody::MaybeInlineMath = self.tree[scan_ix].item.body {
+                            self.make_inline_math(cur_ix, scan_ix);
+                            break;
+                        }
+                        scan = self.tree[scan_ix].next;
+                    }
+                    if scan == None {
+                        self.tree[cur_ix].item.body = ItemBody::Text;
                     }
                 }
                 ItemBody::MaybeLinkOpen => {
@@ -936,7 +953,71 @@ impl<'input, F: BrokenLinkCallback<'input>> Parser<'input, F> {
             self.tree[open].next = self.tree[close].next;
         }
     }
+    fn make_inline_math(&mut self, open: TreeIndex, close: TreeIndex) {
+        let first_ix = self.tree[open].next.unwrap();
+        let bytes = self.text.as_bytes();
+        let span_start = self.tree[open].item.end;
+        let span_end = self.tree[close].item.start;
+        let mut buf: Option<String> = None;
 
+        let mut ix = first_ix;
+
+        while ix != close {
+            let next_ix = self.tree[ix].next.unwrap();
+            let end = if next_ix == close {
+                span_end
+            } else {
+                self.tree[next_ix].item.start
+            };
+            if let ItemBody::HardBreak(_) | ItemBody::SoftBreak = self.tree[ix].item.body {
+                let end = bytes[self.tree[ix].item.start..]
+                .iter()
+                .position(|&b| b == b'\r' || b == b'\n')
+                .unwrap() + self.tree[ix].item.start;
+
+                if let Some(ref mut buf) = buf {
+                    buf.push_str(&self.text[self.tree[ix].item.start..end]);
+                    buf.push(' ');
+                } else {
+                    let mut new_buf = String::with_capacity(span_end - span_start);
+                    new_buf.push_str(&self.text[span_start..end]);
+                    buf = Some(new_buf);
+                }
+            } else if self.tree.is_in_table()
+            && self.text[self.tree[ix].item.start..end].contains("|") {
+                for (i, c) in bytes[self.tree[ix].item.start..end]
+                .into_iter()
+                .copied()
+                .enumerate() {
+                    if c != b'|' {
+                        continue;
+                    }
+                    let pipe_position = self.tree[ix].item.start + i;
+                    let buf = if let Some(ref mut buf) = buf {
+                        buf.push_str(&self.text[self.tree[ix].item.start..pipe_position]);
+                        buf
+                    } else {
+                        let mut new_buf = String::with_capacity(pipe_position - span_start);
+                        new_buf.push_str(&self.text[span_start..pipe_position]);
+                        buf.insert(new_buf)
+                    };
+                    buf.push_str(&self.text[pipe_position..end])
+                }
+            } else if let Some(ref mut buf) = buf {
+                buf.push_str(&self.text[self.tree[ix].item.start..end]);
+            }
+            ix = next_ix;
+        } 
+
+        let cow = if let Some(buf) = buf {
+            buf.into()
+        } else {
+            self.text[span_start..span_end].into()
+        };
+        self.tree[open].item.body = ItemBody::InlineMath(self.allocs.allocate_cow(cow));
+        self.tree[open].item.end = self.tree[close].item.end;
+        self.tree[open].next = self.tree[close].next;
+    }
     /// On success, returns a buffer containing the inline html and byte offset.
     /// When no bytes were skipped, the buffer will be empty and the html can be
     /// represented as a subslice of the input string.
@@ -1662,6 +1743,7 @@ fn body_to_tag_end(body: &ItemBody) -> TagEnd {
         ItemBody::Image(..) => TagEnd::Image,
         ItemBody::Heading(level, _) => TagEnd::Heading(level),
         ItemBody::IndentCodeBlock | ItemBody::FencedCodeBlock(..) => TagEnd::CodeBlock,
+        ItemBody::MathBlock => TagEnd::MathBlock,
         ItemBody::BlockQuote => TagEnd::BlockQuote,
         ItemBody::HtmlBlock => TagEnd::HtmlBlock,
         ItemBody::List(_, c, _) => {
@@ -1683,6 +1765,7 @@ fn item_to_event<'a>(item: Item, text: &'a str, allocs: &mut Allocations<'a>) ->
     let tag = match item.body {
         ItemBody::Text => return Event::Text(text[item.start..item.end].into()),
         ItemBody::Code(cow_ix) => return Event::Code(allocs.take_cow(cow_ix)),
+        ItemBody::InlineMath(cow_ix) => return Event::InlineMath(allocs.take_cow(cow_ix)),
         ItemBody::SynthesizeText(cow_ix) => return Event::Text(allocs.take_cow(cow_ix)),
         ItemBody::SynthesizeChar(c) => return Event::Text(c.into()),
         ItemBody::HtmlBlock => Tag::HtmlBlock,
@@ -1737,6 +1820,7 @@ fn item_to_event<'a>(item: Item, text: &'a str, allocs: &mut Allocations<'a>) ->
             Tag::CodeBlock(CodeBlockKind::Fenced(allocs.take_cow(cow_ix)))
         }
         ItemBody::IndentCodeBlock => Tag::CodeBlock(CodeBlockKind::Indented),
+        ItemBody::MathBlock => Tag::MathBlock,
         ItemBody::BlockQuote => Tag::BlockQuote,
         ItemBody::List(_, c, listitem_start) => {
             if c == b'.' || c == b')' {

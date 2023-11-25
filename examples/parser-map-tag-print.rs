@@ -68,6 +68,7 @@ fn main() {
                 Tag::CodeBlock(code_block_kind) => {
                     println!("CodeBlock code_block_kind: {:?}", code_block_kind)
                 }
+                Tag::MathBlock => println!("Math (this is a p tag)"),
                 Tag::Link {
                     link_type,
                     dest_url,

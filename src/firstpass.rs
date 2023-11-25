@@ -231,6 +231,9 @@ impl<'a, 'b> FirstPass<'a, 'b> {
         if let Some((n, fence_ch)) = scan_code_fence(&bytes[ix..]) {
             return self.parse_fenced_code_block(ix, indent, fence_ch, n);
         }
+        if scan_math_block(&bytes[ix..]) {
+            return self.parse_math_block(ix, indent);
+        }
 
         // parse refdef
         while let Some((bytecount, label, link_def)) = self.parse_refdef_total(start_ix + line_start.bytes_scanned()) {
@@ -704,6 +707,16 @@ impl<'a, 'b> FirstPass<'a, 'b> {
                     begin_text = ix + count;
                     LoopInstruction::ContinueAndSkip(count - 1)
                 }
+                b'$' => {
+                    self.tree.append_text(begin_text, ix);
+                    self.tree.append(Item {
+                        start: ix,
+                        end: ix + 1,
+                        body: ItemBody::MaybeInlineMath
+                    });
+                    begin_text = ix + 1;
+                    LoopInstruction::ContinueAndSkip(0)
+                }
                 b'<' => {
                     // Note: could detect some non-HTML cases and early escape here, but not
                     // clear that's a win.
@@ -1061,6 +1074,53 @@ impl<'a, 'b> FirstPass<'a, 'b> {
         ix + scan_blank_line(&bytes[ix..]).unwrap_or(0)
     }
 
+    fn parse_math_block(
+        &mut self,
+        start_ix: usize,
+        indent: usize,
+    ) -> usize {
+        let bytes: &[u8] = self.text.as_bytes();
+        let mut ix = start_ix + 2;
+        ix = ix + scan_nextline(&bytes[ix..]);
+        self.tree.append(Item {
+            start: start_ix,
+            end: 0,
+            body: ItemBody::MathBlock
+        });
+        self.tree.push();
+        loop {
+            let mut line_start = LineStart::new(&bytes[ix..]);
+            let n_containers = scan_containers(
+                &self.tree,
+                &mut line_start,
+                self.options.has_gfm_footnotes(),
+            );
+            if n_containers < self.tree.spine_len() {
+                break;
+            }
+            line_start.scan_space(indent);
+            let close_line_start = line_start.clone();
+            // only allowing closing mark at the beginning of line.
+            let close_ix = ix + close_line_start.bytes_scanned();
+            if let Some(n) = scan_closing_math_block(&bytes[close_ix..]) {
+                ix = close_ix + n;
+                break;
+            }
+            let remaining_space = line_start.remaining_space();
+            ix += line_start.bytes_scanned();
+            let next_ix = ix + scan_nextline(&bytes[ix..]);
+
+            //exactly the same as code text
+            self.append_code_text(remaining_space, ix, next_ix);
+            ix = next_ix;
+        }
+
+        self.pop(ix);
+
+        // try to read trailing whitespace or it will register as a completely blank line
+        ix + scan_blank_line(&bytes[ix..]).unwrap_or(0)
+
+    }
     fn parse_metadata_block(
         &mut self,
         start_ix: usize,
@@ -1677,6 +1737,7 @@ fn scan_paragraph_interrupt_no_table(
         || scan_hrule(bytes).is_ok()
         || scan_atx_heading(bytes).is_some()
         || scan_code_fence(bytes).is_some()
+        || scan_math_block(bytes)
         || scan_blockquote_start(bytes).is_some()
         || scan_listitem(bytes).map_or(false, |(ix, delim, index, _)| {
             ! current_container ||
@@ -1869,7 +1930,7 @@ fn create_lut(options: &Options) -> LookupTable {
 fn special_bytes(options: &Options) -> [bool; 256] {
     let mut bytes = [false; 256];
     let standard_bytes = [
-        b'\n', b'\r', b'*', b'_', b'&', b'\\', b'[', b']', b'<', b'!', b'`',
+        b'\n', b'\r', b'*', b'_', b'&', b'\\', b'[', b']', b'<', b'!', b'`', b'$'
     ];
 
     for &byte in &standard_bytes {
@@ -2104,7 +2165,7 @@ mod simd {
     pub(super) fn compute_lookup(options: &Options) -> [u8; 16] {
         let mut lookup = [0u8; 16];
         let standard_bytes = [
-            b'\n', b'\r', b'*', b'_', b'&', b'\\', b'[', b']', b'<', b'!', b'`',
+            b'\n', b'\r', b'*', b'_', b'&', b'\\', b'[', b']', b'<', b'!', b'`', b'$'
         ];
 
         for &byte in &standard_bytes {
@@ -2306,7 +2367,7 @@ mod simd {
         #[test]
         fn exhaustive_search() {
             let chars = [
-                b'\n', b'\r', b'*', b'_', b'~', b'|', b'&', b'\\', b'[', b']', b'<', b'!', b'`',
+                b'\n', b'\r', b'*', b'_', b'~', b'|', b'&', b'\\', b'[', b']', b'<', b'!', b'`', b'$'
             ];
 
             for &c in &chars {

@@ -429,6 +429,23 @@ pub(crate) fn scan_closing_code_fence(
     i += num_trailing_spaces;
     scan_eol(&bytes[i..]).map(|_| i)
 }
+pub(crate) fn scan_closing_math_block(
+    bytes: &[u8]
+) -> Option<usize> {
+    if bytes.is_empty() {
+        return Some(0);
+    }
+    let mut i = 0;
+    let num_dollor_signs = scan_ch_repeat(&bytes[i..], b'$');
+    if num_dollor_signs != 2 {
+        return None;
+    }
+    i += 2;
+    let num_trailing_spaces = scan_ch_repeat(&bytes[i..], b' ');
+    i += num_trailing_spaces;
+    scan_eol(&bytes[i..]).map(|_| i)
+
+}
 
 // return: end byte for closing metadata block, or None
 // if the line is not a closing metadata block
@@ -640,6 +657,23 @@ pub(crate) fn scan_code_fence(data: &[u8]) -> Option<(usize, u8)> {
     } else {
         None
     }
+}
+/// Scan math block
+pub(crate) fn scan_math_block(data: &[u8]) -> bool {
+    if let Some(c) = data.get(0) {
+        if *c != b'$' {
+            return false;
+        }
+        let i = 1 + scan_ch_repeat(&data[1..], *c);
+        if i == 2 {
+            let suffix = &data[i..];
+            let next_line = scan_nextline(suffix);
+            if next_line == scan_whitespace_no_nl(suffix) + 1 {
+                return true;
+            }
+        } 
+    }
+    return false;
 }
 
 /// Scan metadata block, returning the number of delimiter bytes
